@@ -1,110 +1,107 @@
-#!/usr/bin/env python3
-# 简单爬虫 (需要安装: requests beautifulsoup4)
-# 用法: python crawler.py https://example.com --max 100 --delay 1.0
+"""
+通用网页爬虫 - 简单版
+可爬取：豆瓣、天气、新闻等公开网站
+"""
 
-import argparse
-import os
-import time
-import hashlib
 import requests
 from bs4 import BeautifulSoup
-from collections import deque
-from urllib.parse import urljoin, urlparse
-import urllib.robotparser
+import csv
+import time
+import random
 
-HEADERS = {"User-Agent": "SimpleCrawler/1.0 (+https://example.com)"}
 
-def get_robots_parser(root_url):
-    parsed = urlparse(root_url)
-    robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-    rp = urllib.robotparser.RobotFileParser()
+def crawl_douban_movies(keyword="科幻", max_pages=3):
+    """爬取豆瓣电影"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    movies = []
+    for page in range(0, max_pages):
+        url = f"https://search.douban.com/movie/subject_search?search_text={keyword}&start={page*15}"
+        
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            items = soup.find_all('div', class_='item-root')
+            
+            for item in items:
+                movie = {}
+                
+                title = item.find('span', class_='title-text')
+                if title:
+                    movie['标题'] = title.get_text(strip=True)
+                
+                rating = item.find('span', class_='rating_nums')
+                if rating:
+                    movie['评分'] = rating.get_text(strip=True)
+                
+                abstract = item.find('span', class_='abstract')
+                if abstract:
+                    movie['简介'] = abstract.get_text(strip=True)
+                
+                if movie.get('标题'):
+                    movies.append(movie)
+                    print(f"  - {movie['标题']} ({movie.get('评分', 'N/A')})")
+            
+            time.sleep(random.uniform(2, 4))
+        except Exception as e:
+            print(f"出错: {e}")
+    
+    return movies
+
+
+def crawl_weather(city="北京"):
+    """爬取天气信息"""
+    url = f"https://www.tianqi.com/{city}/"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
     try:
-        rp.set_url(robots_url)
-        rp.read()
-    except Exception:
-        # 如果读取失败，返回允许所有的假parser
-        rp = None
-    return rp
+        response = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        weather_data = {}
+        
+        temp = soup.find('span', class_='temp')
+        if temp:
+            weather_data['温度'] = temp.get_text(strip=True)
+        
+        desc = soup.find('dd', class_='weather')
+        if desc:
+            weather_data['天气'] = desc.get_text(strip=True)
+        
+        return weather_data
+    except Exception as e:
+        print(f"出错: {e}")
+        return {}
 
-def is_allowed(rp, url):
-    if rp is None:
-        return True
-    return rp.can_fetch(HEADERS["User-Agent"], url)
 
-def safe_filename(url):
-    h = hashlib.sha1(url.encode("utf-8")).hexdigest()
-    parsed = urlparse(url)
-    name = parsed.path.rstrip("/").split("/")[-1] or "index"
-    name = "".join(c for c in name if c.isalnum() or c in ("-", "_"))
-    return f"{name}_{h}.html"
+def save_to_csv(data, filename):
+    """保存到CSV文件"""
+    with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
+        writer = csv.DictWriter(f, fieldnames=data[0].keys())
+        writer.writeheader()
+        writer.writerows(data)
+    print(f"\n已保存到: {filename}")
 
-def extract_links(base_url, html):
-    soup = BeautifulSoup(html, "html.parser")
-    links = set()
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        # 规范化为绝对URL
-        full = urljoin(base_url, href)
-        parsed = urlparse(full)
-        if parsed.scheme in ("http", "https"):
-            # 去掉片段
-            full = full.split("#")[0]
-            links.add(full)
-    return links
-
-def crawl(start_url, max_pages=50, delay=1.0, output_dir="pages"):
-    os.makedirs(output_dir, exist_ok=True)
-    parsed_start = urlparse(start_url)
-    root = f"{parsed_start.scheme}://{parsed_start.netloc}"
-    rp = get_robots_parser(root)
-
-    q = deque([start_url])
-    visited = set()
-    count = 0
-
-    while q and count < max_pages:
-        url = q.popleft()
-        if url in visited:
-            continue
-        if not is_allowed(rp, url):
-            # 跳过 robots.txt 不允许的 URL
-            continue
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=10)
-            time.sleep(delay)
-        except Exception:
-            continue
-        if resp.status_code != 200 or "text/html" not in resp.headers.get("Content-Type", ""):
-            visited.add(url)
-            continue
-
-        # 保存页面
-        fname = safe_filename(url)
-        path = os.path.join(output_dir, fname)
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(resp.text)
-        except Exception:
-            pass
-
-        visited.add(url)
-        count += 1
-
-        # 只跟随同一站点的链接
-        links = extract_links(url, resp.text)
-        for link in links:
-            if urlparse(link).netloc == parsed_start.netloc and link not in visited:
-                q.append(link)
-
-    return visited
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="简单爬虫")
-    parser.add_argument("start_url", help="起始 URL")
-    parser.add_argument("--max", type=int, default=50, help="最多抓取页面数")
-    parser.add_argument("--delay", type=float, default=1.0, help="请求间隔秒数")
-    parser.add_argument("--out", default="pages", help="保存目录")
-    args = parser.parse_args()
-
-    visited = crawl(args.start_url, max_pages=args.max, delay=args.delay, output_dir=args.out)
-    print(f"Crawled {len(visited)} pages. Saved to {args.out}")
+    print("=" * 50)
+    print("简易网页爬虫")
+    print("=" * 50)
+    
+    # 示例1：爬取豆瓣电影
+    print("\n【示例1】爬取豆瓣电影")
+    movies = crawl_douban_movies("人工智能", max_pages=2)
+    if movies:
+        save_to_csv(movies, "movies.csv")
+        print(f"共获取 {len(movies)} 部电影")
+    
+    # 示例2：获取天气
+    print("\n【示例2】获取北京天气")
+    weather = crawl_weather("北京")
+    if weather:
+        print(f"北京天气: {weather}")
